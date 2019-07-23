@@ -78,7 +78,7 @@ def create_model(args, pyreader_name, ernie_config, is_prediction=False):
 
     num_seqs = fluid.layers.create_tensor(dtype='int64')
     accuracy = fluid.layers.accuracy(input=probs, label=labels, total=num_seqs)
-    auc, batch_auc, _ = fluid.layers.auc(input=probs, label=labels)
+    auc, batch_auc, [batch_stat_pos, batch_stat_neg, stat_pos, stat_neg] = fluid.layers.auc(input=probs, label=labels)
 
     graph_vars = {
         "loss": loss,
@@ -87,7 +87,12 @@ def create_model(args, pyreader_name, ernie_config, is_prediction=False):
         "labels": labels,
         "num_seqs": num_seqs,
         "qids": qids,
-        "auc": auc
+        "auc": auc,
+        "batch_auc": batch_auc,
+        "batch_stat_pos": batch_stat_pos,
+        "batch_stat_neg": batch_stat_neg,
+        "stat_pos": stat_pos,
+        "stat_neg": stat_neg
     }
 
     for k, v in graph_vars.items():
@@ -163,23 +168,40 @@ def evaluate(exe, test_program, test_pyreader, graph_vars, eval_phase):
 
     test_pyreader.start()
     total_cost, total_acc, total_num_seqs, total_label_pos_num, total_pred_pos_num, total_correct_num = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    auc, batch_auc, total_batch_stat_pos, total_batch_stat_neg, total_stat_pos, total_stat_neg = 0.0, 0.0, 0, 0, 0, 0
     qids, labels, scores = [], [], []
     time_begin = time.time()
+
+    metric = fluid.metrics.Auc("ROC")
 
     fetch_list = [
         graph_vars["loss"].name, graph_vars["accuracy"].name,
         graph_vars["probs"].name, graph_vars["labels"].name,
         graph_vars["num_seqs"].name, graph_vars["qids"].name,
-        graph_vars['auc'].name
+        graph_vars['auc'].name,
+        graph_vars['batch_auc'].name,
+        graph_vars['batch_stat_pos'].name,
+        graph_vars['batch_stat_neg'].name,
+        graph_vars['stat_pos'].name,
+        graph_vars['stat_neg'].name,
     ]
     while True:
         try:
-            np_loss, np_acc, np_probs, np_labels, np_num_seqs, np_qids, auc = exe.run(
+            [
+                np_loss, np_acc, np_probs, np_labels, np_num_seqs, np_qids,
+                auc, batch_auc, batch_stat_pos, batch_stat_neg, stat_pos, stat_neg
+            ] = exe.run(
                 program=test_program, fetch_list=fetch_list)
-            print ("global_auc:", auc)
+
+            metric.update(np_probs, np_labels)
+
             total_cost += np.sum(np_loss * np_num_seqs)
             total_acc += np.sum(np_acc * np_num_seqs)
             total_num_seqs += np.sum(np_num_seqs)
+            total_batch_stat_pos = np.sum(batch_stat_pos)
+            total_batch_stat_neg = np.sum(batch_stat_neg)
+            total_stat_pos = np.sum(stat_pos)
+            total_stat_neg = np.sum(stat_neg)
             labels.extend(np_labels.reshape((-1)).tolist())
             if np_qids is None:
                 np_qids = np.array([])
@@ -194,11 +216,14 @@ def evaluate(exe, test_program, test_pyreader, graph_vars, eval_phase):
             break
     time_end = time.time()
 
+    auc_auc = metric.eval()
+
     if len(qids) == 0:
         print(
-            "[%s evaluation] ave loss: %f, ave acc: %f, data_num: %d, elapsed time: %f s"
+            "[%s evaluation] ave loss: %f, ave acc: %f, auc: %f, gauc: %f, bauc: %f, data_num: %d, elapsed time: %f s, batch_stat_pos: %s, batch_stat_neg: %s, stat_pos: %s, stat_neg: %s"
             % (eval_phase, total_cost / total_num_seqs, total_acc /
-               total_num_seqs, total_num_seqs, time_end - time_begin))
+               total_num_seqs, auc_auc, auc, batch_auc, total_num_seqs, time_end - time_begin,
+               total_batch_stat_pos, total_batch_stat_neg, total_stat_pos, total_stat_neg))
     else:
         r = total_correct_num / total_label_pos_num
         p = total_correct_num / total_pred_pos_num
