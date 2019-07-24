@@ -29,28 +29,46 @@ from model.ernie import ErnieModel
 def create_model(args, pyreader_name, ernie_config, is_prediction=False):
     pyreader = fluid.layers.py_reader(
         capacity=50,
-        shapes=[[-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
-                [-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1], [-1, 1],
-                [-1, 1]],
-        dtypes=['int64', 'int64', 'int64', 'float32', 'int64', 'int64'],
-        lod_levels=[0, 0, 0, 0, 0, 0],
+        shapes=[
+            [-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
+            [-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
+            [-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
+            [-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
+            [-1, 1], [-1, 1]
+        ],
+        dtypes=[
+            'int64', 'int64', 'int64', 'float32',
+            'int64', 'int64', 'int64', 'float32',
+            'int64', 'int64'
+        ],
+        lod_levels=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         name=pyreader_name,
         use_double_buffer=True)
 
-    (src_ids, sent_ids, pos_ids, input_mask, labels,
+    (a_src_ids, a_sent_ids, a_pos_ids, a_input_mask,
+     b_src_ids, b_sent_ids, b_pos_ids, b_input_mask,
+     labels,
      qids) = fluid.layers.read_file(pyreader)
 
-    ernie = ErnieModel(
-        src_ids=src_ids,
-        position_ids=pos_ids,
-        sentence_ids=sent_ids,
-        input_mask=input_mask,
+    ernie_a = ErnieModel(
+        src_ids=a_src_ids,
+        position_ids=a_pos_ids,
+        sentence_ids=a_sent_ids,
+        input_mask=a_input_mask,
+        config=ernie_config,
+        use_fp16=args.use_fp16)
+    ernie_b = ErnieModel(
+        src_ids=a_src_ids,
+        position_ids=a_pos_ids,
+        sentence_ids=a_sent_ids,
+        input_mask=a_input_mask,
         config=ernie_config,
         use_fp16=args.use_fp16)
 
-    cls_feats = ernie.get_pooled_output()
+    cls_feats_a = ernie_a.get_pooled_output()
+    cls_feats_b = ernie_b.get_pooled_output()
     cls_feats = fluid.layers.dropout(
-        x=cls_feats,
+        x=[cls_feats_a, cls_feats_b],
         dropout_prob=0.1,
         dropout_implementation="upscale_in_train")
     logits = fluid.layers.fc(
@@ -65,7 +83,8 @@ def create_model(args, pyreader_name, ernie_config, is_prediction=False):
     if is_prediction:
         probs = fluid.layers.softmax(logits)
         feed_targets_name = [
-            src_ids.name, sent_ids.name, pos_ids.name, input_mask.name
+            a_src_ids.name, a_sent_ids.name, a_pos_ids.name, a_input_mask.name,
+            b_src_ids.name, b_sent_ids.name, b_pos_ids.name, b_input_mask.name
         ]
         return pyreader, probs, feed_targets_name
 

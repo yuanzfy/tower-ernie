@@ -175,21 +175,23 @@ class BaseReader(object):
     def _prepare_batch_data(self, examples, batch_size, phase=None):
         """generate batch records"""
         batch_records, max_len = [], 0
-        for index, example in enumerate(examples):
+        for index, (example_a, example_b) in enumerate(examples):
             if phase == "train":
                 self.current_example = index
-            record = self._convert_example_to_record(example, self.max_seq_len,
-                                                     self.tokenizer)
-            max_len = max(max_len, len(record.token_ids))
+            record_a = self._convert_example_to_record(example_a, self.max_seq_len,
+                                                       self.tokenizer)
+            record_b = self._convert_example_to_record(example_b, self.max_seq_len,
+                                                       self.tokenizer)
+            max_len = max(max_len, len(record_a.token_ids), len(record_b.token_ids))
             if self.in_tokens:
                 to_append = (len(batch_records) + 1) * max_len <= batch_size
             else:
                 to_append = len(batch_records) < batch_size
             if to_append:
-                batch_records.append(record)
+                batch_records.append((record_a, record_b))
             else:
                 yield self._pad_batch_records(batch_records)
-                batch_records, max_len = [record], len(record.token_ids)
+                batch_records, max_len = [(record_a, record_b)], max(len(record_a.token_ids), len(record_b.token_ids))
 
         if batch_records:
             yield self._pad_batch_records(batch_records)
@@ -230,18 +232,31 @@ class ClassifyReader(BaseReader):
             text_indices = [
                 index for index, h in enumerate(headers) if h != "label"
             ]
-            Example = namedtuple('Example', headers)
+            InputExample = namedtuple('InputExample', headers)
+            Example = namedtuple('Example', ['text_a', 'label'])
 
             examples = []
             for line in reader:
                 for index, text in enumerate(line):
                     if index in text_indices:
                         line[index] = text.replace(' ', '')
-                example = Example(*line)
-                examples.append(example)
+                example = InputExample(*line)
+                example_a = Example(example.text_a, example.label)
+                example_b = Example(example.text_b, example.label)
+                examples.append((example_a, example_b))
             return examples
 
-    def _pad_batch_records(self, batch_records):
+    def _pad_batch_records(self, combine_batch_records):
+        a_batch_records = [r[0] for r in combine_batch_records]
+        b_batch_records = [r[1] for r in combine_batch_records]
+
+        a_list = self.__pad_batch_records(a_batch_records)
+        b_list = self.__pad_batch_records(b_batch_records)
+
+        return_list = a_list[:4] + b_list
+        return return_list
+
+    def __pad_batch_records(self, batch_records):
         batch_token_ids = [record.token_ids for record in batch_records]
         batch_text_type_ids = [record.text_type_ids for record in batch_records]
         batch_position_ids = [record.position_ids for record in batch_records]
@@ -266,7 +281,7 @@ class ClassifyReader(BaseReader):
         padded_position_ids = pad_batch_data(
             batch_position_ids, pad_idx=self.pad_id)
 
-        print (len(padded_token_ids[0]), len(padded_text_type_ids[0]), len(padded_position_ids[0]))
+        # print (len(padded_token_ids[0]), len(padded_text_type_ids[0]), len(padded_position_ids[0]))
         return_list = [
             padded_token_ids, padded_text_type_ids, padded_position_ids,
             input_mask
@@ -276,105 +291,6 @@ class ClassifyReader(BaseReader):
 
         return return_list
 
-
-class SequenceLabelReader(BaseReader):
-    def _pad_batch_records(self, batch_records):
-        batch_token_ids = [record.token_ids for record in batch_records]
-        batch_text_type_ids = [record.text_type_ids for record in batch_records]
-        batch_position_ids = [record.position_ids for record in batch_records]
-        batch_label_ids = [record.label_ids for record in batch_records]
-
-        # padding
-        padded_token_ids, input_mask, batch_seq_lens = pad_batch_data(
-            batch_token_ids,
-            pad_idx=self.pad_id,
-            return_input_mask=True,
-            return_seq_lens=True)
-        padded_text_type_ids = pad_batch_data(
-            batch_text_type_ids, pad_idx=self.pad_id)
-        padded_position_ids = pad_batch_data(
-            batch_position_ids, pad_idx=self.pad_id)
-        padded_label_ids = pad_batch_data(
-            batch_label_ids, pad_idx=len(self.label_map) - 1)
-
-        return_list = [
-            padded_token_ids, padded_text_type_ids, padded_position_ids,
-            input_mask, padded_label_ids, batch_seq_lens
-        ]
-        return return_list
-
-    def _reseg_token_label(self, tokens, labels, tokenizer):
-        assert len(tokens) == len(labels)
-        ret_tokens = []
-        ret_labels = []
-        for token, label in zip(tokens, labels):
-            sub_token = tokenizer.tokenize(token)
-            if len(sub_token) == 0:
-                continue
-            ret_tokens.extend(sub_token)
-            ret_labels.append(label)
-            if len(sub_token) < 2:
-                continue
-            sub_label = label
-            if label.startswith("B-"):
-                sub_label = "I-" + label[2:]
-            ret_labels.extend([sub_label] * (len(sub_token) - 1))
-
-        assert len(ret_tokens) == len(ret_labels)
-        return ret_tokens, ret_labels
-
-    def _convert_example_to_record(self, example, max_seq_length, tokenizer):
-        tokens = tokenization.convert_to_unicode(example.text_a).split(u"")
-        labels = tokenization.convert_to_unicode(example.label).split(u"")
-        tokens, labels = self._reseg_token_label(tokens, labels, tokenizer)
-
-        if len(tokens) > max_seq_length - 2:
-            tokens = tokens[0:(max_seq_length - 2)]
-            labels = labels[0:(max_seq_length - 2)]
-
-        tokens = ["[CLS]"] + tokens + ["[SEP]"]
-        token_ids = tokenizer.convert_tokens_to_ids(tokens)
-        position_ids = list(range(len(token_ids)))
-        text_type_ids = [0] * len(token_ids)
-        no_entity_id = len(self.label_map) - 1
-        label_ids = [no_entity_id] + [
-            self.label_map[label] for label in labels
-        ] + [no_entity_id]
-
-        Record = namedtuple(
-            'Record',
-            ['token_ids', 'text_type_ids', 'position_ids', 'label_ids'])
-        record = Record(
-            token_ids=token_ids,
-            text_type_ids=text_type_ids,
-            position_ids=position_ids,
-            label_ids=label_ids)
-        return record
-
-
-class ExtractEmbeddingReader(BaseReader):
-    def _pad_batch_records(self, batch_records):
-        batch_token_ids = [record.token_ids for record in batch_records]
-        batch_text_type_ids = [record.text_type_ids for record in batch_records]
-        batch_position_ids = [record.position_ids for record in batch_records]
-
-        # padding
-        padded_token_ids, input_mask, seq_lens = pad_batch_data(
-            batch_token_ids,
-            pad_idx=self.pad_id,
-            return_input_mask=True,
-            return_seq_lens=True)
-        padded_text_type_ids = pad_batch_data(
-            batch_text_type_ids, pad_idx=self.pad_id)
-        padded_position_ids = pad_batch_data(
-            batch_position_ids, pad_idx=self.pad_id)
-
-        return_list = [
-            padded_token_ids, padded_text_type_ids, padded_position_ids,
-            input_mask, seq_lens
-        ]
-
-        return return_list
 
 
 if __name__ == '__main__':

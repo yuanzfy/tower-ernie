@@ -56,7 +56,8 @@ class ErnieModel(object):
                  input_mask,
                  config,
                  weight_sharing=True,
-                 use_fp16=False):
+                 use_fp16=False,
+                 scope="ernie"):
 
         self._emb_size = config['hidden_size']
         self._n_layer = config['num_hidden_layers']
@@ -79,6 +80,7 @@ class ErnieModel(object):
         self._param_initializer = fluid.initializer.TruncatedNormal(
             scale=config['initializer_range'])
 
+        # with fluid.unique_name.guard(name=scope):
         self._build_model(src_ids, position_ids, sentence_ids, input_mask)
 
     def _build_model(self, src_ids, position_ids, sentence_ids, input_mask):
