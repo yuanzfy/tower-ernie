@@ -266,6 +266,7 @@ class ClassifyReader(BaseReader):
         padded_position_ids = pad_batch_data(
             batch_position_ids, pad_idx=self.pad_id)
 
+        print (len(padded_token_ids[0]), len(padded_text_type_ids[0]), len(padded_position_ids[0]))
         return_list = [
             padded_token_ids, padded_text_type_ids, padded_position_ids,
             input_mask
