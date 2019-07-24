@@ -68,7 +68,7 @@ def create_model(args, pyreader_name, ernie_config, is_prediction=False):
     cls_feats_a = ernie_a.get_pooled_output()
     cls_feats_b = ernie_b.get_pooled_output()
     cls_feats = fluid.layers.dropout(
-        x=fluid.layers.concat([cls_feats_a, cls_feats_b], name="cls_concat"),
+        x=fluid.layers.concat([cls_feats_a, cls_feats_b], name="cls_concat", axis=1),
         dropout_prob=0.1,
         dropout_implementation="upscale_in_train")
     logits = fluid.layers.fc(
